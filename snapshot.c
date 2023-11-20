@@ -204,7 +204,7 @@ readobject(lua_State *L, lua_State *dL, const void *parent, const char *desc) {
 	if(t == LUA_TUSERDATA) {
 		const TValue *o = NULL;
 		#if LUA_VERSION_NUM == 504
-			#if LUA_VERSION_RELEASE_NUM < 50406
+			#if LUA_VERSION_RELEASE_NUM < 50405
 				o = s2v(L->top - 1);
 			#else
 				o = s2v(L->top.p - 1);
@@ -493,13 +493,13 @@ _thread_size(struct lua_State* p) {
 	size_t size = sizeof(*p);
   	size += p->nci*sizeof(CallInfo);
 	#ifdef stacksize
-		#if LUA_VERSION_RELEASE_NUM < 50406
+		#if LUA_VERSION_RELEASE_NUM < 50405
   			size += stacksize(p)*sizeof(*p->stack);
 		#else
 			size += stacksize(p)*sizeof(*p->stack.p);
 		#endif
   	#else
-		#if LUA_VERSION_RELEASE_NUM < 50406
+		#if LUA_VERSION_RELEASE_NUM < 50405
   			size += p->stacksize*sizeof(*p->stack);
 		#else
 			size += p->stacksize*sizeof(*p->stack.p);
@@ -697,7 +697,7 @@ l_obj2addr(lua_State* L) {
 	if(t == LUA_TUSERDATA) {
 		const TValue *o = NULL;
 		#if LUA_VERSION_NUM == 504
-			#if LUA_VERSION_RELEASE_NUM < 50406
+			#if LUA_VERSION_RELEASE_NUM < 50405
 				o = s2v(L->top - 1);
 			#else
 				o = s2v(L->top.p - 1);
