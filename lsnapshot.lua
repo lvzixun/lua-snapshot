@@ -2,9 +2,10 @@ local ss = require "snapshot"
 local snapshot = ss.snapshot
 local str2ud = ss.str2ud
 local ud2str = ss.ud2str
-
-local Root = str2ud("0")
+local sformat = string.format
+local tconcat = table.concat
 local M = {}
+local Root = str2ud("0")
 
 local t2simple = {
     table = "(T)",
@@ -42,7 +43,7 @@ local function reshape_snapshot(s, full_snapshot)
         local record = parser_record(v)
         local t = record.type
         local parents = record.parents
-        local st = t2simple[t] or string.format("(L@%s)", t)
+        local st = t2simple[t] or sformat("(L@%s)", t)
         reshape[k] = {
             t = t,
             size = record.size,
@@ -73,7 +74,7 @@ local function reshape_snapshot(s, full_snapshot)
         for i=len, len-count+1, -1 do
             t[#t+1] = list[i]
         end
-        return table.concat(t, "->")
+        return tconcat(t, "->")
     end
 
     local deep = 0
@@ -105,7 +106,7 @@ local function reshape_snapshot(s, full_snapshot)
             local pk = parent_item.field
             -- root parent
             if pv == Root then
-                list[#list+1] = pk
+                list[#list+1] = entry.st .. pk
                 list[#list+1] = "Root"
                 entry.fullpath = concat_path(list, 2)
                 return true
@@ -115,7 +116,7 @@ local function reshape_snapshot(s, full_snapshot)
             local parent_entry = reshape[pv]
             if not parent_entry then
                 list[#list+1] = pk
-                list[#list+1] = string.format("{%s}", ud2str(pv))
+                list[#list+1] = sformat("{%s}", ud2str(pv))
                 entry.fullpath = concat_path(list, 2)
                 return true
             end
@@ -128,7 +129,7 @@ local function reshape_snapshot(s, full_snapshot)
                 return true
             end
 
-            local st = parent_entry.st
+            local st = entry.st
             local idx = #list+1
             list[idx] = st .. pk
             deep = deep + 1
@@ -144,11 +145,11 @@ local function reshape_snapshot(s, full_snapshot)
             end
         end
         if #parents>0 then
-            local pv1 = string.format("{%s}", ud2str(parents[1].parent))
+            local pv1 = sformat("{%s}", ud2str(parents[1].parent))
             local pk1 = parents[1].field
             entry.fullpath = concat_path({pk1, pv1})
         else
-            entry.fullpath = string.format("{%s}", ud2str(addr))
+            entry.fullpath = sformat("{%s}", ud2str(addr))
         end
     end
 
@@ -201,34 +202,34 @@ local function dump_reshape(reshape, len)
 
     local function size_tostring(sz)
         if sz < 1024 * 1024 then
-            return string.format("%sKB", sz / 1024)
+            return sformat("%sKB", sz / 1024)
         elseif sz < 1024 * 1204 * 1024 then
-            return string.format("%sMB", sz / 1024 / 1024)
+            return sformat("%sMB", sz / 1024 / 1024)
         else
-            return string.format("%sGB", sz / 1024 / 1024 / 1024)
+            return sformat("%sGB", sz / 1024 / 1024 / 1024)
         end
     end
 
-    local function path_tostring(parent)
+    local function path_tostring(st, parent)
         local fullpath = parent.parent_fullpath
         local field = parent.field
-        return fullpath .. "->" .. parent.parent_st .. field
+        return fullpath .. "->" .. st .. field
     end
 
     local function entry_tostring(idx, entry)
         local t = {}
-        t[1] = string.format("[%d] type:%s addr:%s size:%s",
+        t[1] = sformat("[%d] type:%s addr:%s size:%s",
             idx, entry.st, ud2str(entry.addr), size_tostring(entry.size))
 
         local len = #entry.parents
         for i=1,len do
             if i >= 8 then
-                t[i+1] = string.format("\tparents more than %d ...", len-i)
+                t[i+1] = sformat("\tparents more than %d ...", len-i)
                 break
             end
-            t[i+1] = string.format("\t%s", path_tostring(entry.parents[i]))
+            t[i+1] = sformat("\t%s", path_tostring(entry.st, entry.parents[i]))
         end
-        return table.concat(t, "\n")
+        return tconcat(t, "\n")
     end
 
     local all_size = 0
@@ -239,10 +240,10 @@ local function dump_reshape(reshape, len)
         if i <= len then
             print(entry_tostring(i, v))
         elseif i == len+1 then
-            print(string.format("more than %d ...", rlen - len))
+            print(sformat("more than %d ...", rlen - len))
         end
     end
-    print(string.format("--------------- all size:%sKb ---------------", all_size / 1024))
+    print(sformat("--------------- all size:%sKb ---------------", all_size / 1024))
 end
 
 function M.dump_snapshot(len, max_objcount)
@@ -255,9 +256,14 @@ function M.dstop_snapshot(len)
     if not begin_s then
         error("snapshot not begin")
     end
+    for k, _ in pairs(begin_s) do
+        begin_s[k] = true -- 释放value，end_s中将不会有这些key
+    end
+    begin_s[ss.obj2addr(begin_s)] = true -- 消除begin_s的影响
     local end_s = snapshot()
     local reshape = diff_snapshot(begin_s, end_s)
     dump_reshape(reshape, len)
+    begin_s = nil
 end
 
 return M

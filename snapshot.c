@@ -488,7 +488,7 @@ static size_t
 _thread_size(struct lua_State* p) {
 	size_t size = sizeof(*p);
   	size += p->nci*sizeof(CallInfo);
-  	#ifdef stacksize
+	#ifdef stacksize
   		size += stacksize(p)*sizeof(*p->stack);
   	#else
   		size += p->stacksize*sizeof(*p->stack);
@@ -678,6 +678,28 @@ l_lightuserdata2str(lua_State* L) {
 	return 1;
 }
 
+static int
+l_obj2addr(lua_State* L) {
+	int t = lua_type(L, 1);
+	void * p = NULL;
+	if(t == LUA_TUSERDATA) {
+		const TValue *o = NULL;
+		#if LUA_VERSION_NUM == 504
+			o = s2v(L->top - 1);
+		#else
+			o = L->top - 1;
+		#endif
+		// const TValue *o = index2value(L, -1);
+		p = (void*)uvalue(o);
+	} else if (t == LUA_TSTRING) {
+		p = (void*)lua_tostring(L, -1);
+	}
+	else {
+		p = (void*)lua_topointer(L, -1);
+	}
+	lua_pushlightuserdata(L, p);
+	return 1;
+}
 
 int
 luaopen_snapshot(lua_State *L) {
@@ -686,6 +708,7 @@ luaopen_snapshot(lua_State *L) {
 		{"snapshot", snapshot},
 		{"str2ud", l_str2lightuserdata},
 		{"ud2str", l_lightuserdata2str},
+		{"obj2addr", l_obj2addr},
 		{NULL, NULL},
 	};
 	// lua_pushcfunction(L, snapshot);
