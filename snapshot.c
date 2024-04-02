@@ -724,7 +724,7 @@ l_obj2addr(lua_State* L) {
 }
 
 static void
-_objectsize(lua_State* L, int value_idx, int max_deep, int cur_deep, size_t* sz_p) {
+_objectsize(lua_State* L, int value_idx, int map_idx, int max_deep, int cur_deep, size_t* sz_p) {
 	size_t size = 0;
 	int t = lua_type(L, value_idx);
 	if(cur_deep > max_deep) {
@@ -732,7 +732,7 @@ _objectsize(lua_State* L, int value_idx, int max_deep, int cur_deep, size_t* sz_
 	}
 
 	// check share object
-	const void* key = (const void*)lua_topointer(L, value_idx);
+	void* key = (void*)lua_topointer(L, value_idx);
 	#ifdef isshared
 		if(t == LUA_TSTRING  || t == LUA_TTABLE) {
 			GCObject* o = (GCObject*)key;
@@ -743,9 +743,19 @@ _objectsize(lua_State* L, int value_idx, int max_deep, int cur_deep, size_t* sz_
 	#endif
 
 	luaL_checkstack(L, LUA_MINSTACK, NULL);
+	lua_pushlightuserdata(L, key);
+	int mt = lua_gettable(L, map_idx);
+	lua_pop(L, 1);
+	if(mt != LUA_TNIL) {
+		return;
+	}
+
+	lua_pushlightuserdata(L, key);
+	lua_pushboolean(L, true);
+	lua_settable(L, map_idx);
 	switch(t) {
 		case LUA_TSTRING: {
-			key = lua_tostring(L, value_idx);
+			key = (void*)lua_tostring(L, value_idx);
 			size = _lstring_size(key);
 			*sz_p += size;
 		} break;
@@ -772,20 +782,26 @@ _objectsize(lua_State* L, int value_idx, int max_deep, int cur_deep, size_t* sz_
 			while(lua_next(L, value_idx) != 0) {
 				int vidx = lua_gettop(L);
 				int kidx = vidx-1;
-				_objectsize(L, vidx, max_deep, cur_deep+1, sz_p);
-				_objectsize(L, kidx, max_deep, cur_deep+1, sz_p);
+				_objectsize(L, vidx, map_idx, max_deep, cur_deep+1, sz_p);
+				_objectsize(L, kidx, map_idx, max_deep, cur_deep+1, sz_p);
 				lua_pop(L, 1);
 			}
 		} break;
 	}
+
+	lua_pushlightuserdata(L, key);
+	lua_pushnil(L);
+	lua_settable(L, map_idx);
 }
 
 static int
 l_objsize(lua_State* L) {
+	lua_newtable(L);
+	int map_idx = lua_gettop(L);
 	bool recursive = lua_toboolean(L, 2);
 	size_t sz = 0;
 	int max_deep = (recursive)?(128):(0);
-	_objectsize(L, 1, max_deep, 0, &sz);
+	_objectsize(L, 1, map_idx, max_deep, 0, &sz);
 	lua_pushinteger(L, sz);
 	return 1;
 }
