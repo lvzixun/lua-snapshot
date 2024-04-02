@@ -536,6 +536,17 @@ _lfunc_size(LClosure *p) {
     return size;
 }
 
+static size_t
+_lstring_size(const void* s) {
+	#if LUA_VERSION_NUM == 504
+		TString* ts = (TString*)(((char*)s) - offsetof(TString, contents));
+	#else
+		TString* ts = (TString*)(((char*)s) - sizeof(UTString));
+	#endif
+	size_t size = tsslen(ts);
+	return size;
+}
+
 static void
 pdesc(lua_State *L, lua_State *dL, int idx, const char * typename) {
 	lua_pushnil(dL);
@@ -606,12 +617,7 @@ pdesc(lua_State *L, lua_State *dL, int idx, const char * typename) {
 			}break;
 
 			case STRING: {
-				#if LUA_VERSION_NUM == 504
-				TString* ts = (TString*)(((char*)key) - offsetof(TString, contents));
-				#else
-				TString* ts = (TString*)(((char*)key) - sizeof(UTString));
-				#endif
-				size = tsslen(ts);
+				size = _lstring_size(key);
 				snprintf(buff_sz, sizeof(buff_sz), "{%zd}", size);
 				luaL_addstring(&b, typename);
 				luaL_addchar(&b,' ');
@@ -717,6 +723,73 @@ l_obj2addr(lua_State* L) {
 	return 1;
 }
 
+static void
+_objectsize(lua_State* L, int value_idx, int max_deep, int cur_deep, size_t* sz_p) {
+	size_t size = 0;
+	int t = lua_type(L, value_idx);
+	if(cur_deep > max_deep) {
+		return;
+	}
+
+	// check share object
+	const void* key = (const void*)lua_topointer(L, value_idx);
+	#ifdef isshared
+		if(t == LUA_TSTRING  || t == LUA_TTABLE) {
+			GCObject* o = (GCObject*)key;
+			if(isshared(o)) {
+				return;
+			}
+		}
+	#endif
+
+	luaL_checkstack(L, LUA_MINSTACK, NULL);
+	switch(t) {
+		case LUA_TSTRING: {
+			key = lua_tostring(L, value_idx);
+			size = _lstring_size(key);
+			*sz_p += size;
+		} break;
+
+		case LUA_TFUNCTION: {
+			if (is_lightcfunction(L, value_idx)) {
+				lua_pop(L, 1);
+				size = _cfunc_size((CClosure*)key);
+			} else {
+				size = _lfunc_size((LClosure*)key);
+			}
+			*sz_p += size;
+		} break;
+
+		case LUA_TTHREAD: {
+			size = _thread_size((struct lua_State*)key);
+			*sz_p += size;
+		} break;
+
+		case LUA_TTABLE: {
+			size = _table_size((Table*)key);
+			*sz_p += size;
+			lua_pushnil(L);
+			while(lua_next(L, value_idx) != 0) {
+				int vidx = lua_gettop(L);
+				int kidx = vidx-1;
+				_objectsize(L, vidx, max_deep, cur_deep+1, sz_p);
+				_objectsize(L, kidx, max_deep, cur_deep+1, sz_p);
+				lua_pop(L, 1);
+			}
+		} break;
+	}
+}
+
+static int
+l_objsize(lua_State* L) {
+	bool recursive = lua_toboolean(L, 2);
+	size_t sz = 0;
+	int max_deep = (recursive)?(128):(0);
+	_objectsize(L, 1, max_deep, 0, &sz);
+	lua_pushinteger(L, sz);
+	return 1;
+}
+
 int
 luaopen_snapshot(lua_State *L) {
 	luaL_checkversion(L);
@@ -725,6 +798,7 @@ luaopen_snapshot(lua_State *L) {
 		{"str2ud", l_str2lightuserdata},
 		{"ud2str", l_lightuserdata2str},
 		{"obj2addr", l_obj2addr},
+		{"objsize", l_objsize},
 		{NULL, NULL},
 	};
 	// lua_pushcfunction(L, snapshot);
