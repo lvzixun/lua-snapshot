@@ -204,7 +204,14 @@ readobject(lua_State *L, lua_State *dL, const void *parent, const char *desc) {
 	if(t == LUA_TUSERDATA) {
 		p = lua_touserdata(L, -1);
 	} else if (t == LUA_TSTRING) {
-		p = lua_tostring(L, -1);
+		/* Lua 5.5: external strings (LSTRFIX/LSTRMEM) store content outside
+		   TString, so lua_tostring cannot derive the GC object address.
+		   Use lua_topointer to get the TString* directly. */
+		#if LUA_VERSION_NUM >= 505
+			p = lua_topointer(L, -1);
+		#else
+			p = lua_tostring(L, -1);
+		#endif
 	}
 	else {
 		p = (const void*)lua_topointer(L, -1);
@@ -412,7 +419,7 @@ mark_thread(lua_State *L, lua_State *dL, const void * parent, const char *desc, 
 	lua_pop(L,1);
 }
 
-static void 
+static void
 mark_object(lua_State *L, lua_State *dL, const void * parent, const char *desc, struct snapshot_params* args) {
 	luaL_checkstack(L, LUA_MINSTACK, NULL);
 	int t = lua_type(L, -1);
@@ -464,7 +471,33 @@ gen_table_desc(lua_State *dL, luaL_Buffer *b, const void * parent, const char *d
 	luaL_addchar(b, '\n');
 }
 
-static size_t 
+/* Lua 5.5: Table internals changed -- no lastfree/sizearray, array uses
+   mixed Value+tag layout, and hash parts >= 2^LIMFORLAST have a Limbox. */
+#if LUA_VERSION_NUM >= 505
+
+#ifndef LIMFORLAST
+#define LIMFORLAST    3
+#endif
+
+typedef struct { Node *dummy; Node follows_pNode; } _Limbox_aux;
+
+static size_t
+_table_size(Table* p) {
+	size_t size = sizeof(*p);
+	if (!isdummy(p)) {
+		size += sizenode(p)*sizeof(Node);
+		if (p->lsizenode >= LIMFORLAST) {
+			size += offsetof(_Limbox_aux, follows_pNode);
+		}
+	}
+	if (p->asize > 0)
+		size += p->asize*(sizeof(Value) + 1) + sizeof(unsigned);
+	return size;
+}
+
+#else
+
+static size_t
 _table_size(Table* p) {
 	size_t size = sizeof(*p);
 	size_t tl = (p->lastfree == NULL)?(0):(sizenode(p));
@@ -476,6 +509,22 @@ _table_size(Table* p) {
 	#endif
 	return size;
 }
+
+#endif
+
+/* Lua 5.5: lua_State is allocated as part of LX (with LUA_EXTRASPACE),
+   and sizeof(LX) != sizeof(lua_State) + LUA_EXTRASPACE due to alignment. */
+#if LUA_VERSION_NUM >= 505
+
+static size_t
+_thread_size(struct lua_State* p) {
+	size_t size = sizeof(LX);
+	size += p->nci*sizeof(CallInfo);
+	size += (stacksize(p) + EXTRA_STACK)*sizeof(*p->stack.p);
+	return size;
+}
+
+#else
 
 static size_t
 _thread_size(struct lua_State* p) {
@@ -497,10 +546,13 @@ _thread_size(struct lua_State* p) {
   	return size;
 }
 
+#endif
+
 
 static size_t
 _userdata_size(Udata *p) {
-	#if LUA_VERSION_NUM == 504
+	/* Lua 5.5 uses the same sizeudata(nuvalue, len) macro as 5.4 */
+	#if LUA_VERSION_NUM >= 504
 		int size = sizeudata(p->nuvalue, p->len);
 		return size;
 	#else
@@ -525,6 +577,31 @@ _lfunc_size(LClosure *p) {
     return size;
 }
 
+/* Lua 5.5: s is a TString* (from lua_topointer), and external strings
+   (LSTRFIX/LSTRMEM) need per-kind size calculation.
+   Lua 5.4 and earlier: s is a content pointer (from lua_tostring),
+   need to subtract header offset to get TString*. */
+#if LUA_VERSION_NUM >= 505
+
+static size_t
+_lstring_size(const void* s) {
+	TString* ts = (TString*)s;
+	if (strisshr(ts))
+		return sizestrshr(cast_uint(ts->shrlen));
+	else {
+		switch (ts->shrlen) {
+		case LSTRREG:
+			return offsetof(TString, falloc) + (ts->u.lnglen + 1) * sizeof(char);
+		case LSTRFIX:
+			return offsetof(TString, falloc);
+		default: /* LSTRMEM: content is externally allocated but freed via falloc on GC */
+			return sizeof(TString) + (ts->u.lnglen + 1) * sizeof(char);
+		}
+	}
+}
+
+#else
+
 static size_t
 _lstring_size(const void* s) {
 	if (s == NULL) return 0;
@@ -533,9 +610,10 @@ _lstring_size(const void* s) {
 	#else
 		TString* ts = (TString*)(((char*)s) - sizeof(UTString));
 	#endif
-	size_t size = tsslen(ts);
-	return size;
+	return sizelstring(tsslen(ts));
 }
+
+#endif
 
 static void
 pdesc(lua_State *L, lua_State *dL, int idx, const char * typename) {
@@ -696,7 +774,12 @@ l_obj2addr(lua_State* L) {
 	if(t == LUA_TUSERDATA) {
 		p = lua_touserdata(L, 1);
 	} else if (t == LUA_TSTRING) {
-		p = (void*)lua_tostring(L, 1);
+		/* Lua 5.5: must match readobject's key derivation for strings */
+		#if LUA_VERSION_NUM >= 505
+			p = (void*)lua_topointer(L, 1);
+		#else
+			p = (void*)lua_tostring(L, 1);
+		#endif
 	}
 	else {
 		p = (void*)lua_topointer(L, 1);
@@ -737,8 +820,14 @@ _objectsize(lua_State* L, int value_idx, int map_idx, int max_deep, int cur_deep
 	lua_settable(L, map_idx);
 	switch(t) {
 		case LUA_TSTRING: {
-			key = (void*)lua_tostring(L, value_idx);
-			size = _lstring_size(key);
+			/* Lua 5.5: key is already TString* from lua_topointer above;
+			   earlier versions need lua_tostring for content pointer. */
+			#if LUA_VERSION_NUM >= 505
+				size = _lstring_size(key);
+			#else
+				key = (void*)lua_tostring(L, value_idx);
+				size = _lstring_size(key);
+			#endif
 			*sz_p += size;
 		} break;
 
