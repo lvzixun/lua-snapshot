@@ -202,18 +202,7 @@ readobject(lua_State *L, lua_State *dL, const void *parent, const char *desc) {
 
 	const void * p = NULL;
 	if(t == LUA_TUSERDATA) {
-		const TValue *o = NULL;
-		#if LUA_VERSION_NUM == 504
-			#if LUA_VERSION_RELEASE_NUM < 50405
-				o = s2v(L->top - 1);
-			#else
-				o = s2v(L->top.p - 1);
-			#endif
-		#else
-			o = L->top - 1;
-		#endif
-		// const TValue *o = index2value(L, -1);
-		p = (const void*)uvalue(o);
+		p = lua_touserdata(L, -1);
 	} else if (t == LUA_TSTRING) {
 		p = lua_tostring(L, -1);
 	}
@@ -385,24 +374,23 @@ mark_thread(lua_State *L, lua_State *dL, const void * parent, const char *desc, 
 		int top = lua_gettop(cL);
 		luaL_checkstack(cL, 1, NULL);
 		int i;
-		char tmp[16];
+		char stack_tmp[16];
 		for (i=0;i<top;i++) {
 			lua_pushvalue(cL, i+1);
-			sprintf(tmp, "[%d]", i+1);
-			mark_object(cL, dL, cL, tmp, args);
+			sprintf(stack_tmp, "[%d]", i+1);
+			mark_object(cL, dL, cL, stack_tmp, args);
 		}
 	}
 	lua_Debug ar;
 	luaL_Buffer b;
 	luaL_buffinit(dL, &b);
 	while (lua_getstack(cL, level, &ar)) {
-		char tmp[128];
 		lua_getinfo(cL, "Sl", &ar);
 		luaL_addstring(&b, ar.short_src);
 		if (ar.currentline >=0) {
-			char tmp[16];
-			sprintf(tmp,":%d ",ar.currentline);
-			luaL_addstring(&b, tmp);
+			char line_tmp[16];
+			sprintf(line_tmp,":%d ",ar.currentline);
+			luaL_addstring(&b, line_tmp);
 		}
 
 		int i,j;
@@ -411,8 +399,9 @@ mark_thread(lua_State *L, lua_State *dL, const void * parent, const char *desc, 
 				const char * name = lua_getlocal(cL, &ar, i);
 				if (name == NULL)
 					break;
-				snprintf(tmp, sizeof(tmp), "%s{#%s:%d}",name,ar.short_src,ar.linedefined);
-				mark_object(cL, dL, t, tmp, args);
+				char local_desc[256];
+				snprintf(local_desc, sizeof(local_desc), "%s{#%s:%d}",name,ar.short_src,ar.linedefined);
+				mark_object(cL, dL, t, local_desc, args);
 			}
 		}
 
@@ -538,6 +527,7 @@ _lfunc_size(LClosure *p) {
 
 static size_t
 _lstring_size(const void* s) {
+	if (s == NULL) return 0;
 	#if LUA_VERSION_NUM == 504
 		TString* ts = (TString*)(((char*)s) - offsetof(TString, contents));
 	#else
@@ -668,6 +658,9 @@ snapshot(lua_State *L) {
 	struct snapshot_params args = {0};
 	args.max_count = luaL_optinteger(L, 1, 0);
 	lua_State *dL = luaL_newstate();
+	if (dL == NULL) {
+		return luaL_error(L, "snapshot: failed to create auxiliary state (out of memory)");
+	}
 	for (i=0;i<MARK;i++) {
 		lua_newtable(dL);
 	}
@@ -701,23 +694,12 @@ l_obj2addr(lua_State* L) {
 	int t = lua_type(L, 1);
 	void * p = NULL;
 	if(t == LUA_TUSERDATA) {
-		const TValue *o = NULL;
-		#if LUA_VERSION_NUM == 504
-			#if LUA_VERSION_RELEASE_NUM < 50405
-				o = s2v(L->top - 1);
-			#else
-				o = s2v(L->top.p - 1);
-			#endif
-		#else
-			o = L->top - 1;
-		#endif
-		// const TValue *o = index2value(L, -1);
-		p = (void*)uvalue(o);
+		p = lua_touserdata(L, 1);
 	} else if (t == LUA_TSTRING) {
-		p = (void*)lua_tostring(L, -1);
+		p = (void*)lua_tostring(L, 1);
 	}
 	else {
-		p = (void*)lua_topointer(L, -1);
+		p = (void*)lua_topointer(L, 1);
 	}
 	lua_pushlightuserdata(L, p);
 	return 1;
@@ -762,7 +744,6 @@ _objectsize(lua_State* L, int value_idx, int map_idx, int max_deep, int cur_deep
 
 		case LUA_TFUNCTION: {
 			if (is_lightcfunction(L, value_idx)) {
-				lua_pop(L, 1);
 				size = _cfunc_size((CClosure*)key);
 			} else {
 				size = _lfunc_size((LClosure*)key);
@@ -788,10 +769,6 @@ _objectsize(lua_State* L, int value_idx, int map_idx, int max_deep, int cur_deep
 			}
 		} break;
 	}
-
-	lua_pushlightuserdata(L, key);
-	lua_pushnil(L);
-	lua_settable(L, map_idx);
 }
 
 static int
