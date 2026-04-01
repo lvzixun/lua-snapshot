@@ -762,7 +762,6 @@ _objectsize(lua_State* L, int value_idx, int map_idx, int max_deep, int cur_deep
 
 		case LUA_TFUNCTION: {
 			if (is_lightcfunction(L, value_idx)) {
-				lua_pop(L, 1);
 				size = _cfunc_size((CClosure*)key);
 			} else {
 				size = _lfunc_size((LClosure*)key);
@@ -788,10 +787,6 @@ _objectsize(lua_State* L, int value_idx, int map_idx, int max_deep, int cur_deep
 			}
 		} break;
 	}
-
-	lua_pushlightuserdata(L, key);
-	lua_pushnil(L);
-	lua_settable(L, map_idx);
 }
 
 static int
