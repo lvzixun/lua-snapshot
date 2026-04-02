@@ -103,6 +103,40 @@ is_lightcfunction(lua_State *L, int idx) {
 	return 0;
 }
 
+/*
+** lua_touserdata/lua_topointer return the user data area pointer
+** (getudatamem), not the Udata* struct pointer. We need the Udata*
+** to correctly compute userdata size via sizeudata(nuvalue, len).
+*/
+static Udata *
+udata_from_stack(lua_State *L, int idx) {
+#if LUA_VERSION_NUM >= 504
+	TValue *o;
+	#if LUA_VERSION_RELEASE_NUM < 50405
+		if (idx > 0) {
+			o = s2v(L->ci->func + idx);
+		} else {
+			o = s2v(L->top + idx);
+		}
+	#else
+		if (idx > 0) {
+			o = s2v(L->ci->func.p + idx);
+		} else {
+			o = s2v(L->top.p + idx);
+		}
+	#endif
+	return uvalue(o);
+#else
+	TValue *o;
+	if (idx > 0) {
+		o = L->ci->func + idx;
+	} else {
+		o = L->top + idx;
+	}
+	return rawuvalue(o);
+#endif
+}
+
 #endif
 
 #if LUA_VERSION_NUM == 504
@@ -202,7 +236,7 @@ readobject(lua_State *L, lua_State *dL, const void *parent, const char *desc) {
 
 	const void * p = NULL;
 	if(t == LUA_TUSERDATA) {
-		p = lua_touserdata(L, -1);
+		p = udata_from_stack(L, -1);
 	} else if (t == LUA_TSTRING) {
 		/* Lua 5.5: external strings (LSTRFIX/LSTRMEM) store content outside
 		   TString, so lua_tostring cannot derive the GC object address.
@@ -323,6 +357,22 @@ mark_userdata(lua_State *L, lua_State *dL, const void * parent, const char *desc
 		mark_table(L, dL, t, "[metatable]", args);
 	}
 
+	#if LUA_VERSION_NUM >= 504
+	{
+		int n;
+		for (n = 1; lua_getiuservalue(L, -1, n) != LUA_TNONE; n++) {
+			if (!lua_isnil(L, -1)) {
+				char uvdesc[32];
+				snprintf(uvdesc, sizeof(uvdesc), "[uservalue:%d]", n);
+				mark_object(L, dL, t, uvdesc, args);
+			} else {
+				lua_pop(L, 1);
+			}
+		}
+		lua_pop(L, 1); /* pop the LUA_TNONE */
+	}
+	lua_pop(L, 1);
+	#else
 	lua_getuservalue(L,-1);
 	if (lua_isnil(L,-1)) {
 		lua_pop(L,2);
@@ -330,6 +380,7 @@ mark_userdata(lua_State *L, lua_State *dL, const void * parent, const char *desc
 		mark_object(L, dL, t, "[uservalue]", args);
 		lua_pop(L,1);
 	}
+	#endif
 }
 
 static void
@@ -532,15 +583,15 @@ _thread_size(struct lua_State* p) {
   	size += p->nci*sizeof(CallInfo);
 	#ifdef stacksize
 		#if LUA_VERSION_RELEASE_NUM < 50405
-  			size += stacksize(p)*sizeof(*p->stack);
+  			size += (stacksize(p) + EXTRA_STACK)*sizeof(*p->stack);
 		#else
-			size += stacksize(p)*sizeof(*p->stack.p);
+			size += (stacksize(p) + EXTRA_STACK)*sizeof(*p->stack.p);
 		#endif
   	#else
 		#if LUA_VERSION_RELEASE_NUM < 50405
-  			size += p->stacksize*sizeof(*p->stack);
+  			size += (p->stacksize + EXTRA_STACK)*sizeof(*p->stack);
 		#else
-			size += p->stacksize*sizeof(*p->stack.p);
+			size += (p->stacksize + EXTRA_STACK)*sizeof(*p->stack.p);
 		#endif
   	#endif
   	return size;
@@ -772,7 +823,7 @@ l_obj2addr(lua_State* L) {
 	int t = lua_type(L, 1);
 	void * p = NULL;
 	if(t == LUA_TUSERDATA) {
-		p = lua_touserdata(L, 1);
+		p = udata_from_stack(L, 1);
 	} else if (t == LUA_TSTRING) {
 		/* Lua 5.5: must match readobject's key derivation for strings */
 		#if LUA_VERSION_NUM >= 505
@@ -833,6 +884,9 @@ _objectsize(lua_State* L, int value_idx, int map_idx, int max_deep, int cur_deep
 
 		case LUA_TFUNCTION: {
 			if (is_lightcfunction(L, value_idx)) {
+				break; /* light C functions have no GC object */
+			}
+			if (lua_iscfunction(L, value_idx)) {
 				size = _cfunc_size((CClosure*)key);
 			} else {
 				size = _lfunc_size((LClosure*)key);
@@ -842,6 +896,11 @@ _objectsize(lua_State* L, int value_idx, int map_idx, int max_deep, int cur_deep
 
 		case LUA_TTHREAD: {
 			size = _thread_size((struct lua_State*)key);
+			*sz_p += size;
+		} break;
+
+		case LUA_TUSERDATA: {
+			size = _userdata_size(udata_from_stack(L, value_idx));
 			*sz_p += size;
 		} break;
 
