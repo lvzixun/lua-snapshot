@@ -202,7 +202,18 @@ readobject(lua_State *L, lua_State *dL, const void *parent, const char *desc) {
 
 	const void * p = NULL;
 	if(t == LUA_TUSERDATA) {
-		p = lua_touserdata(L, -1);
+		const TValue *o = NULL;
+		#if LUA_VERSION_NUM == 504
+			#if LUA_VERSION_RELEASE_NUM < 50405
+				o = s2v(L->top - 1);
+			#else
+				o = s2v(L->top.p - 1);
+			#endif
+		#else
+			o = L->top - 1;
+		#endif
+		// const TValue *o = index2value(L, -1);
+		p = (const void*)uvalue(o);
 	} else if (t == LUA_TSTRING) {
 		p = lua_tostring(L, -1);
 	}
