@@ -579,7 +579,7 @@ _thread_size(struct lua_State* p) {
 
 static size_t
 _thread_size(struct lua_State* p) {
-	size_t size = sizeof(*p);
+	size_t size = sizeof(*p) + LUA_EXTRASPACE;
   	size += p->nci*sizeof(CallInfo);
 	#ifdef stacksize
 		#if LUA_VERSION_RELEASE_NUM < 50405
@@ -923,9 +923,13 @@ static int
 l_objsize(lua_State* L) {
 	lua_newtable(L);
 	int map_idx = lua_gettop(L);
-	bool recursive = lua_toboolean(L, 2);
 	size_t sz = 0;
-	int max_deep = (recursive)?(128):(0);
+	int max_deep;
+	if (lua_isinteger(L, 2)) {
+		max_deep = (int)lua_tointeger(L, 2);
+	} else {
+		max_deep = lua_toboolean(L, 2) ? 128 : 0;
+	}
 	_objectsize(L, 1, map_idx, max_deep, 0, &sz);
 	lua_pushinteger(L, sz);
 	return 1;
